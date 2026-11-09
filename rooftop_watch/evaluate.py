@@ -161,6 +161,33 @@ def false_rate(false_rows, rule, column="false_scheduled_day"):
     return 100 * sum(int(r[column]) for r in rows) / sum(int(r["rooftop_weeks"]) for r in rows)
 
 
+def by_length(outages, rule_names):
+    """Table rows of outages detected out of outages judged, per rule and outage length."""
+    hours = sorted({int(r["outage_hours"]) for r in outages})
+    rows = ["| rule | " + " | ".join(f"{h} h" for h in hours) + " |", "| --- |" + " --- |" * len(hours)]
+    for rule in rule_names:
+        mine = [r for r in outages if r["rule"] == rule]
+        cells = []
+        for h in hours:
+            judged = [r for r in mine if int(r["outage_hours"]) == h]
+            cells.append("{} of {}".format(sum(1 for r in judged if r["delay_min"] != ""), len(judged)))
+        rows.append(f"| {rule} | " + " | ".join(cells) + " |")
+    return rows
+
+
+def format_tune(result):
+    """The lines that `tune` prints and writes to tune.txt."""
+    lines = ["k: false alerts per 100 rooftop-weeks on scheduled days (pooled over the seeds), outages detected, outages"]
+    for k, false, detected, total in result["k_table"]:
+        lines.append(f"  k={k:g}: {false:.2f}, {detected}, {total}")
+    lines.append(f"smallest k at or under {MAX_FALSE_PER_100:g}: {result['k']}")
+    lines.append("thin-transcript share of median: F1")
+    for fraction, f1 in result["thin_f1"].items():
+        lines.append(f"  {fraction}: {f1:.4f}")
+    lines.append(f"best share: {result['thin_fraction']}")
+    return lines
+
+
 def nearest_rank(values, share):
     ordered = sorted(values)
     return ordered[math.ceil(share * len(ordered)) - 1]
@@ -231,6 +258,10 @@ def summarize(out_dir, rooftops=ROOFTOPS):
             rule, len(found), len(mine), 100 * len(found) / len(mine), spread(shares),
             statistics.median(found) / 60, nearest_rank(found, 0.9) / 60, false_cells))
     lines += ["", f"Outages judged: {min(per_seed.values())} to {max(per_seed.values())} per seed.", "",
+              "### Detected by outage length", "",
+              "Outages detected out of outages judged, pooled over the seeds.", ""]
+    lines += by_length(outages, rule_names)
+    lines += ["",
               "## Reconcile", "",
               f"Judged at day {HISTORY_DAYS + 3}, three days after the {HISTORY_DAYS}-day span. Totals over the {len(seeds)} seeds. "
               "'Missed' is an injected fault no finding with that code names; 'extra' is a finding for something that was not "

@@ -77,6 +77,28 @@ def test_spread_reports_median_and_range_and_skips_blanks():
     assert evaluate.spread(["", ""]) == "n/a"
 
 
+def test_by_length_counts_detected_over_judged_per_rule_and_length():
+    rows = [
+        {"rule": "a", "outage_hours": "4", "delay_min": "10"},
+        {"rule": "a", "outage_hours": "4", "delay_min": ""},
+        {"rule": "a", "outage_hours": "8", "delay_min": "5"},
+        {"rule": "b", "outage_hours": "4", "delay_min": ""},
+        {"rule": "b", "outage_hours": "8", "delay_min": ""},
+    ]
+    assert evaluate.by_length(rows, ["a", "b"]) == [
+        "| rule | 4 h | 8 h |", "| --- | --- | --- |", "| a | 1 of 2 | 1 of 1 |", "| b | 0 of 1 | 0 of 1 |"]
+
+
+def test_format_tune_lists_each_k_and_the_chosen_values():
+    result = {"k": 20.0, "k_table": [(12.0, 2.4, 90, 110), (20.0, 0.1, 78, 110)],
+              "thin_fraction": 0.1, "thin_f1": {0.05: 0.7962, 0.1: 0.9949}}
+    assert evaluate.format_tune(result) == [
+        "k: false alerts per 100 rooftop-weeks on scheduled days (pooled over the seeds), outages detected, outages",
+        "  k=12: 2.40, 90, 110", "  k=20: 0.10, 78, 110",
+        "smallest k at or under 2: 20.0",
+        "thin-transcript share of median: F1", "  0.05: 0.7962", "  0.1: 0.9949", "best share: 0.1"]
+
+
 def test_nearest_rank_percentile_takes_the_value_at_the_rank_not_below_it():
     assert evaluate.nearest_rank(list(range(1, 11)), 0.9) == 9
     assert evaluate.nearest_rank(list(range(1, 24)), 0.9) == 21      # n = 23: rank 21, not the floor index 19
@@ -114,4 +136,7 @@ def test_one_small_run_writes_every_file_and_the_quiet_rule_beats_a_six_hour_gap
     assert evaluate.false_rate(false_rows, "quiet k=12") < evaluate.false_rate(false_rows, "gap 6h") / 10
     outages = evaluate.read_csv(tmp_path / "silence-outages.csv")
     assert any(r["rule"] == "quiet k=12" and r["delay_min"] != "" for r in outages), "quiet k=12 detected nothing"
-    assert "| quiet k=12 |" in (tmp_path / "summary.md").read_text()
+    summary = (tmp_path / "summary.md").read_text()
+    assert "| quiet k=12 |" in summary
+    block = summary.split("### Detected by outage length")[1].split("## Reconcile")[0]
+    assert "| quiet k=12 | " in block and "| gap 24h | " in block and " of " in block

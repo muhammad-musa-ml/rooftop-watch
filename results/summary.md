@@ -19,6 +19,21 @@ Fleets of 80 rooftops, synthetic data. Counts are pooled over the 5 seeds unless
 
 Outages judged: 29 to 45 per seed.
 
+### Detected by outage length
+
+Outages detected out of outages judged, pooled over the seeds.
+
+| rule | 4 h | 8 h | 24 h | 48 h |
+| --- | --- | --- | --- | --- |
+| quiet k=3 | 34 of 38 | 33 of 39 | 44 of 44 | 58 of 58 |
+| quiet k=5 | 28 of 38 | 30 of 39 | 44 of 44 | 58 of 58 |
+| quiet k=8 | 23 of 38 | 25 of 39 | 43 of 44 | 58 of 58 |
+| quiet k=12 | 17 of 38 | 23 of 39 | 41 of 44 | 58 of 58 |
+| quiet k=20 | 4 of 38 | 14 of 39 | 34 of 44 | 55 of 58 |
+| gap 6h | 14 of 38 | 37 of 39 | 44 of 44 | 58 of 58 |
+| gap 12h | 12 of 38 | 16 of 39 | 44 of 44 | 58 of 58 |
+| gap 24h | 0 of 38 | 1 of 39 | 37 of 44 | 58 of 58 |
+
 ## Reconcile
 
 Judged at day 31, three days after the 28-day span. Totals over the 5 seeds. 'Missed' is an injected fault no finding with that code names; 'extra' is a finding for something that was not injected.

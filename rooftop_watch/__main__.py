@@ -82,15 +82,11 @@ def cmd_evaluate(args):
 
 
 def cmd_tune(args):
-    result = evaluate.tune()
-    print("k: false alerts per 100 rooftop-weeks on scheduled days (pooled over the seeds), outages detected, outages")
-    for k, false, detected, total in result["k_table"]:
-        print(f"  k={k:g}: {false:.2f}, {detected}, {total}")
-    print(f"smallest k at or under {evaluate.MAX_FALSE_PER_100:g}: {result['k']}")
-    print("thin-transcript share of median: F1")
-    for fraction, f1 in result["thin_f1"].items():
-        print(f"  {fraction}: {f1:.4f}")
-    print(f"best share: {result['thin_fraction']}")
+    text = "\n".join(evaluate.format_tune(evaluate.tune())) + "\n"
+    print(text, end="")
+    os.makedirs(args.out, exist_ok=True)
+    with open(os.path.join(args.out, "tune.txt"), "w", newline="\n") as fh:
+        fh.write(text)
     return 0
 
 
@@ -132,7 +128,8 @@ def main(argv=None):
     p.add_argument("--rooftops", type=int, default=evaluate.ROOFTOPS)
     p.set_defaults(fn=cmd_evaluate)
 
-    p = sub.add_parser("tune", help="choose k and the thin-transcript share on the tuning seeds")
+    p = sub.add_parser("tune", help="choose k and the thin-transcript share on the tuning seeds; writes <out>/tune.txt")
+    p.add_argument("--out", default="results")
     p.set_defaults(fn=cmd_tune)
 
     p = sub.add_parser("scale", help="time both checks at several fleet sizes")
