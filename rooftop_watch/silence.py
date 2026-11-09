@@ -9,7 +9,7 @@ from dataclasses import dataclass
 MIN_WEEK = 10080
 HOURS_PER_WEEK = 168
 PROFILE_WEEKS = 4
-K = 12.0              # expected uploads missed before a rooftop is called quiet; picked on tuning seeds, see evaluate.tune
+K = 20.0              # expected uploads missed before a rooftop is called quiet; picked on tuning seeds, see evaluate.tune
 MIN_BASELINE = 50     # uploads a rooftop needs in its profile window before it is judged at all
 
 
