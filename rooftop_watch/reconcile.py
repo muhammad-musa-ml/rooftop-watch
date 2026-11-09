@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 GRACE_MIN = 360           # longer than the 300-minute late upload and the 240-minute sync lag
 SHORT_FRACTION = 0.5      # bytes per second under this share of the rooftop's median is a short file
-THIN_FRACTION = 0.25      # words per minute under this share of the rooftop's median is a thin transcript
+THIN_FRACTION = 0.10      # words per minute under this share of the rooftop's median is a thin transcript; picked on tuning seeds
 MIN_THIN_DURATION_S = 60  # shorter recordings carry too few words to judge
 MIN_BASELINE = 20         # recordings a rooftop needs before its own median is used
 

@@ -62,11 +62,14 @@ def hour_shares(first, last):
 
 
 def day_events(rng, rooftop, day):
-    """UTC minutes at which repairs close on local day `day` (local day 0 is a Monday)."""
+    """(UTC minutes at which repairs close on local day `day`, whether the rooftop skipped a day it
+    would normally open). Local day 0 is a Monday."""
     weekday = day % 7
     closed_today = rng.random() < CLOSED_DAY_PROB
-    if weekday not in OPEN_HOURS or closed_today:
-        return []
+    if weekday not in OPEN_HOURS:
+        return [], False
+    if closed_today:
+        return [], True
     first, last = OPEN_HOURS[weekday]
     noise = rng.lognormvariate(-DAY_NOISE * DAY_NOISE / 2, DAY_NOISE)
     mean = rooftop.daily_mean * DAY_FACTOR[weekday] * noise
@@ -76,24 +79,76 @@ def day_events(rng, rooftop, day):
         base = local_midnight + hour * MIN_HOUR
         out.extend(base + rng.randrange(MIN_HOUR) for _ in range(poisson(rng, mean * share)))
     out.sort()
-    return out
+    return out, False
 
 
-def rooftop_events(seed, rooftop, days):
-    """(sequence, closed_min, uploaded_min, synced_min) for every repair of one rooftop.
+def rooftop_days(seed, rooftop, days):
+    """(events, closed_windows) for one rooftop.
 
+    An event is (sequence, closed_min, uploaded_min, synced_min) for one repair. A closed window is the
+    UTC span of a local day the rooftop skipped although it would normally open.
     Each rooftop draws from its own generator, so a rooftop is the same in a fleet of 10 and a fleet of 1000.
     """
     rng = random.Random(f"{seed}:{rooftop.rooftop_id}")
-    events = []
+    events, closed_windows = [], []
     for day in range(days):
-        for closed in day_events(rng, rooftop, day):
+        closes, skipped = day_events(rng, rooftop, day)
+        if skipped:
+            start = day * MIN_DAY - rooftop.utc_offset_h * MIN_HOUR
+            closed_windows.append((start, start + MIN_DAY))
+        for closed in closes:
             if rng.random() < LATE_UPLOAD_PROB:
                 lag = rng.randint(60, 300)
             else:
                 lag = rng.randint(1, 12)
             events.append((len(events) + 1, closed, closed + lag, closed + rng.randint(0, DMS_SYNC_MAX_MIN)))
-    return events
+    return events, closed_windows
+
+
+def rooftop_events(seed, rooftop, days):
+    return rooftop_days(seed, rooftop, days)[0]
+
+
+OUTAGE_HOURS = (4, 8, 24, 48)
+OUTAGE_COUNT_WEIGHTS = (0.5, 0.35, 0.15)   # a rooftop has 0, 1 or 2 outages in the test period
+OUTAGE_GAP_MIN = 2 * MIN_DAY               # at least this long between two outages of one rooftop
+
+
+def make_outages(seed, rooftop_id, start_min, end_min):
+    """Windows (start, end) in which every upload from this rooftop is lost, inside [start_min, end_min)."""
+    rng = random.Random(f"{seed}:{rooftop_id}:outage")
+    count = rng.choices((0, 1, 2), weights=OUTAGE_COUNT_WEIGHTS)[0]
+    outages = []
+    for _ in range(count):
+        for _ in range(20):
+            length = rng.choice(OUTAGE_HOURS) * MIN_HOUR
+            start = rng.randrange(start_min, end_min - length)
+            if all(start >= e + OUTAGE_GAP_MIN or start + length + OUTAGE_GAP_MIN <= s for s, e in outages):
+                outages.append((start, start + length))
+                break
+    return sorted(outages)
+
+
+def apply_outages(uploads, outages):
+    """Drop the uploads inside each outage window.
+
+    Returns (kept uploads, [(start, end, first_missed)]) where first_missed is the first upload that
+    would have happened inside the window, or None when the rooftop was closed for all of it.
+    """
+    kept, details = [], []
+    for start, end in outages:
+        inside = [u for u in uploads if start <= u < end]
+        details.append((start, end, inside[0] if inside else None))
+    for u in uploads:
+        if not any(s <= u < e for s, e in outages):
+            kept.append(u)
+    return kept, details
+
+
+def upload_times(events):
+    """Upload minutes in time order. A late upload from an earlier repair can land after a later repair's, so
+    the events, which are in closing order, are not in upload order."""
+    return sorted(e[2] for e in events)
 
 
 def ro_id(rooftop_id, seq):

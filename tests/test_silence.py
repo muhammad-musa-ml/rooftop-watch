@@ -50,10 +50,10 @@ def test_a_closed_weekend_is_not_quiet_but_a_missed_morning_is():
     friday_close = 4 * 1440 + 17 * HOUR
     monday_early = 7 * 1440 + 6 * HOUR
     assert profile.expected(friday_close, monday_early) == 0.0
-    assert not is_quiet(profile, friday_close, monday_early)
+    assert not is_quiet(profile, friday_close, monday_early, k=8.0)
     tuesday_morning = 1440 + 10 * HOUR
-    assert is_quiet(profile, tuesday_morning, tuesday_morning + 3 * HOUR)    # 12 expected uploads missed
-    assert not is_quiet(profile, tuesday_morning, tuesday_morning + 1 * HOUR)  # 4 expected
+    assert is_quiet(profile, tuesday_morning, tuesday_morning + 3 * HOUR, k=8.0)    # 12 expected uploads missed
+    assert not is_quiet(profile, tuesday_morning, tuesday_morning + 1 * HOUR, k=8.0)  # 4 expected
 
 
 def conn_with_uploads(per_rooftop):
