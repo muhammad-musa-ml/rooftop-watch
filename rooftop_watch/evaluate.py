@@ -1,10 +1,12 @@
 """Replay and score the checks over several seeds, then write results/ (csv files and summary.md).
 
-Silence: 80 rooftops, 28 days of clean history to learn each profile, then 28 test days in which
-outages are injected. Every rule is checked every 15 minutes. Reconcile: 28 days of repairs with
-faults injected, judged three days after the last one. Thresholds are chosen on separate seeds.
+Silence: 80 rooftops, 28 days of clean history to learn each profile, then 28 test days. Every rule is
+checked every 15 minutes, twice: on the fleet with outages injected, to see whether an outage makes the
+rule fire, and on the same fleet with no outages, to count the alerts nothing explains. Reconcile: 28
+days of repairs with faults injected, judged at day 31. Thresholds are chosen on separate seeds.
 """
 import csv
+import math
 import statistics
 from bisect import bisect_left
 from pathlib import Path
@@ -24,7 +26,7 @@ TUNE_SEEDS = (101, 102, 103)
 K_VALUES = (3.0, 5.0, 8.0, 12.0, 20.0)
 GAP_HOURS = (6, 12, 24)
 THIN_FRACTIONS = (0.05, 0.10, 0.15, 0.25, 0.35)
-MAX_FALSE_PER_100 = 2.0   # tuning rule for k: the smallest k at or under this many open-day false alerts per 100 rooftop-weeks
+MAX_FALSE_PER_100 = 2.0   # tuning rule for k: the smallest k at or under this many false alerts per 100 rooftop-weeks on scheduled days
 
 
 def rules(profile):
@@ -37,74 +39,82 @@ def rules(profile):
     return out
 
 
-def replay(fire, kept, checks, details, end, closed_windows=()):
-    """Delays, false episodes and all episodes for one rule.
-
-    A delay is minutes from the first missed upload to the first check that fires inside the outage, None
-    if none does. A false episode starts outside every outage; it is counted as a closed-day episode when it
-    starts inside a window in which the rooftop skipped a day it would normally open, otherwise as an
-    open-day episode. Returns (delays, false open-day, false closed-day, all episodes).
-
-    `kept` must be in time order: the pointer below stops at the first upload later than the check time.
-    """
-    if any(b < a for a, b in zip(kept, kept[1:])):
+def states_at(fire, uploads, checks):
+    """Whether the rule is firing at each check time. `uploads` must be in time order: the pointer below
+    stops at the first upload later than the check time, so an unsorted list would leave it on a stale one."""
+    if any(b < a for a, b in zip(uploads, uploads[1:])):
         raise ValueError("uploads must be in time order")
     states, j = [], -1
     for t in checks:
-        while j + 1 < len(kept) and kept[j + 1] <= t:
+        while j + 1 < len(uploads) and uploads[j + 1] <= t:
             j += 1
-        states.append(fire(kept[j], t))
-    starts = [checks[i] for i, on in enumerate(states) if on and (i == 0 or not states[i - 1])]
-    windows = []
-    for start, stop, _ in details:
-        later = [u for u in kept if u >= stop]
-        windows.append((start, later[0] if later else end))
-    outside = [s for s in starts if not any(a <= s <= b for a, b in windows)]
-    false_closed = sum(1 for s in outside if any(a <= s < b for a, b in closed_windows))
-    false_open = len(outside) - false_closed
+        states.append(j >= 0 and fire(uploads[j], t))
+    return states
+
+
+def replay(fire, kept, clean, checks, details, closed_windows=()):
+    """Delays, false alerts and all alerts for one rule on one rooftop.
+
+    `kept` is the rooftop's uploads with the outages removed, `clean` the same uploads with none removed.
+    An outage is detected at the first check inside it, on or after its first missed upload, where the rule
+    fires on `kept` and does not fire on `clean`: a rule that was already firing for ordinary reasons, such
+    as a closed night, gets no credit. The delay is the minutes from that first missed upload.
+    A false alert is an alert that starts on `clean`, where nothing is wrong. An alert already on at the
+    first check began before the window and is not counted. It is a skipped-day alert when it starts inside
+    a window in which the rooftop skipped a day it normally opens, otherwise a scheduled-day alert.
+    Returns (delays, scheduled-day false alerts, skipped-day false alerts, all alerts on clean).
+    """
+    on_kept = states_at(fire, kept, checks)
+    on_clean = states_at(fire, clean, checks)
+    starts = [checks[i] for i in range(1, len(on_clean)) if on_clean[i] and not on_clean[i - 1]]
+    false_skipped = sum(1 for s in starts if any(a <= s < b for a, b in closed_windows))
     delays = []
     for start, stop, first_missed in details:
         if first_missed is None:
             continue
         hit = next((checks[i] for i in range(bisect_left(checks, first_missed), len(checks))
-                    if checks[i] < stop and states[i]), None)
+                    if checks[i] < stop and on_kept[i] and not on_clean[i]), None)
         delays.append(None if hit is None else hit - first_missed)
-    return delays, false_open, false_closed, len(starts)
+    return delays, len(starts) - false_skipped, false_skipped, len(starts)
+
+
+def rooftop_series(seed, rooftop):
+    """The data one rooftop's replay needs: clean uploads, uploads with outages removed, the outages as
+    (start, end, first missed upload), the windows of skipped days, and the profile learned from clean history.
+
+    Uploads are the recordings the database would hold, so a repair whose recording is missing is not an upload.
+    """
+    t0 = HISTORY_DAYS * MIN_DAY
+    t1 = (HISTORY_DAYS + TEST_DAYS) * MIN_DAY
+    events, closed_windows = gen.rooftop_days(seed, rooftop, HISTORY_DAYS + TEST_DAYS)
+    _, recs, _ = gen.rooftop_records(seed, rooftop, events)
+    clean = sorted(rec[3] for rec in recs)
+    kept, details = gen.apply_outages(clean, gen.make_outages(seed, rooftop.rooftop_id, t0, t1))
+    profile, _ = profile_from_times([u for u in clean if t0 - PROFILE_WEEKS * MIN_WEEK <= u < t0])
+    return clean, kept, details, closed_windows, profile
 
 
 def silence_seed(seed, rooftops=ROOFTOPS):
+    """(outage rows, false-alert rows) for one seed: one outage row per outage and rule, one false-alert row per rule."""
     t0 = HISTORY_DAYS * MIN_DAY
     t1 = (HISTORY_DAYS + TEST_DAYS) * MIN_DAY
     checks = list(range(t0, t1, STEP_MIN))
-    per_rule = {}
-    empty = 0
+    outage_rows, totals = [], {}
     for rooftop in gen.make_rooftops(seed, rooftops):
-        events, closed_windows = gen.rooftop_days(seed, rooftop, HISTORY_DAYS + TEST_DAYS)
-        uploads = gen.upload_times(events)
-        profile, _ = profile_from_times([u for u in uploads if t0 - PROFILE_WEEKS * MIN_WEEK <= u < t0])
-        kept, details = gen.apply_outages(uploads, gen.make_outages(seed, rooftop.rooftop_id, t0, t1))
-        empty += sum(1 for d in details if d[2] is None)
+        clean, kept, details, closed_windows, profile = rooftop_series(seed, rooftop)
+        judged = [d for d in details if d[2] is not None]
         for name, fire in rules(profile).items():
-            delays, false_open, false_closed, _ = replay(fire, kept, checks, details, t1, closed_windows)
-            acc = per_rule.setdefault(name, {"delays": [], "open": 0, "closed": 0})
-            acc["delays"] += delays
-            acc["open"] += false_open
-            acc["closed"] += false_closed
-    rooftop_weeks = rooftops * TEST_DAYS / 7
-    rows = []
-    for name, acc in per_rule.items():
-        found = sorted(d for d in acc["delays"] if d is not None)
-        rows.append({
-            "seed": seed, "rule": name, "outages": len(acc["delays"]), "empty_outages": empty,
-            "detected": len(found),
-            "median_delay_h": round(statistics.median(found) / 60, 2) if found else "",
-            "p90_delay_h": round(found[int(0.9 * (len(found) - 1))] / 60, 2) if found else "",
-            "false_open_day": acc["open"],
-            "false_closed_day": acc["closed"],
-            "false_open_per_100_rooftop_weeks": round(100 * acc["open"] / rooftop_weeks, 2),
-            "false_closed_per_100_rooftop_weeks": round(100 * acc["closed"] / rooftop_weeks, 2),
-        })
-    return rows
+            delays, false_open, false_closed, _ = replay(fire, kept, clean, checks, details, closed_windows)
+            for (start, stop, _), delay in zip(judged, delays):
+                outage_rows.append({"seed": seed, "rooftop_id": rooftop.rooftop_id, "rule": name,
+                                    "outage_hours": (stop - start) // MIN_HOUR,
+                                    "delay_min": "" if delay is None else delay})
+            acc = totals.setdefault(name, [0, 0])
+            acc[0] += false_open
+            acc[1] += false_closed
+    false_rows = [{"seed": seed, "rule": name, "rooftop_weeks": rooftops * TEST_DAYS // 7,
+                   "false_scheduled_day": o, "false_skipped_day": c} for name, (o, c) in totals.items()]
+    return outage_rows, false_rows
 
 
 def reconcile_seed(seed, rooftops=ROOFTOPS):
@@ -133,6 +143,11 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+def read_csv(path):
+    with open(path, newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
 def thin_f1(rows):
     tp = sum(r["caught"] for r in rows)
     fp = sum(r["extra"] for r in rows)
@@ -140,95 +155,111 @@ def thin_f1(rows):
     return 2 * tp / (2 * tp + fp + fn)
 
 
+def false_rate(false_rows, rule, column="false_scheduled_day"):
+    """False alerts per 100 rooftop-weeks for one rule, pooled over the seeds in `false_rows`."""
+    rows = [r for r in false_rows if r["rule"] == rule]
+    return 100 * sum(int(r[column]) for r in rows) / sum(int(r["rooftop_weeks"]) for r in rows)
+
+
+def nearest_rank(values, share):
+    ordered = sorted(values)
+    return ordered[math.ceil(share * len(ordered)) - 1]
+
+
 def tune(seeds=TUNE_SEEDS, rooftops=ROOFTOPS):
     """Pick k and the thin-transcript fraction on seeds that the reported runs never use."""
-    silence = [row for seed in seeds for row in silence_seed(seed, rooftops)]
-    chosen_k = None
-    table = []
+    outage_rows, false_rows = [], []
+    for seed in seeds:
+        o, f = silence_seed(seed, rooftops)
+        outage_rows += o
+        false_rows += f
+    chosen_k, table = None, []
     for k in K_VALUES:
-        rows = [r for r in silence if r["rule"] == f"quiet k={k:g}"]
-        false = statistics.median(r["false_open_per_100_rooftop_weeks"] for r in rows)
-        table.append((k, false, sum(r["detected"] for r in rows), sum(r["outages"] for r in rows)))
+        rule = f"quiet k={k:g}"
+        false = false_rate(false_rows, rule)
+        mine = [r for r in outage_rows if r["rule"] == rule]
+        table.append((k, false, sum(1 for r in mine if r["delay_min"] != ""), len(mine)))
         if chosen_k is None and false <= MAX_FALSE_PER_100:
             chosen_k = k
     sweeps = [row for seed in seeds for row in reconcile_seed(seed, rooftops)[1]]
     f1 = {f: thin_f1([r for r in sweeps if r["thin_fraction"] == f]) for f in THIN_FRACTIONS}
-    chosen_fraction = max(f1, key=f1.get)
-    return {"k": chosen_k, "k_table": table, "thin_fraction": chosen_fraction, "thin_f1": f1}
+    return {"k": chosen_k, "k_table": table, "thin_fraction": max(f1, key=f1.get), "thin_f1": f1}
 
 
-def read_csv(path):
-    with open(path, newline="") as fh:
-        return list(csv.DictReader(fh))
-
-
-def spread(values, digits=2):
-    """'median (min-max)' over seeds, each number written to at most `digits` decimals."""
+def spread(values, digits=0):
+    """'median (min-max)' of a list of numbers written to `digits` decimals; blanks are skipped."""
     values = sorted(float(v) for v in values if v != "")
     if not values:
         return "n/a"
-    fmt = lambda v: f"{v:.{digits}f}".rstrip("0").rstrip(".") if digits else f"{v:.0f}"
-    return f"{fmt(statistics.median(values))} ({fmt(values[0])}-{fmt(values[-1])})"
+    return f"{statistics.median(values):.{digits}f} ({values[0]:.{digits}f}-{values[-1]:.{digits}f})"
 
 
 def summarize(out_dir, rooftops=ROOFTOPS):
-    """Build summary.md from the csv files. Every number in the README comes from this file."""
+    """Build summary.md from the csv files. The README's tables are copied from it and from scale.md."""
     out = Path(out_dir)
-    silence = read_csv(out / "silence.csv")
+    outages = read_csv(out / "silence-outages.csv")
+    false_rows = read_csv(out / "silence-false-alerts.csv")
     recon = read_csv(out / "reconcile.csv")
     sweep = read_csv(out / "thin-sweep.csv")
     grace = read_csv(out / "grace.csv")
-    seeds = sorted({int(r["seed"]) for r in silence})
+    seeds = sorted({int(r["seed"]) for r in false_rows})
+    rule_names = list(dict.fromkeys(r["rule"] for r in false_rows))
+    per_seed = {s: sum(1 for r in outages if int(r["seed"]) == s and r["rule"] == rule_names[0]) for s in seeds}
     lines = [f"# Results, seeds {', '.join(map(str, seeds))}", "",
-             f"Each cell is the median over {len(seeds)} seeds with the minimum and maximum in brackets. "
-             f"Fleet of {rooftops} rooftops, synthetic data.", "",
+             f"Fleets of {rooftops} rooftops, synthetic data. Counts are pooled over the {len(seeds)} seeds unless a cell says "
+             "median and range over seeds.", "",
              "## Quiet feeds", "",
              f"{HISTORY_DAYS} clean days to learn each profile, then {TEST_DAYS} days with outages of 4, 8, 24 or 48 hours "
-             f"(0, 1 or 2 per rooftop); a rule is checked every {STEP_MIN} minutes. 'Detected' is the share of outages in which "
-             "the rule fires before the outage ends; the delay runs from the first upload that did not arrive. "
-             "A false alert is a firing that starts outside every outage, split by whether the rooftop was open or had "
-             "skipped a day it normally opens. Outages with no upload to miss are left out.", "",
-             "| rule | detected | median delay (h) | 90th percentile delay (h) | false alerts, open days, per 100 rooftop-weeks | false alerts, skipped days, per 100 rooftop-weeks |",
-             "| --- | --- | --- | --- | --- | --- |"]
-    for rule in dict.fromkeys(r["rule"] for r in silence):
-        rows = [r for r in silence if r["rule"] == rule]
-        share = [100 * int(r["detected"]) / int(r["outages"]) for r in rows]
-        lines.append("| {} | {}% | {} | {} | {} | {} |".format(
-            rule, spread(share, 0),
-            spread([r["median_delay_h"] for r in rows], 2),
-            spread([r["p90_delay_h"] for r in rows], 2),
-            spread([r["false_open_per_100_rooftop_weeks"] for r in rows], 2),
-            spread([r["false_closed_per_100_rooftop_weeks"] for r in rows], 2)))
-    outages = sorted(int(r["outages"]) for r in silence if r["rule"] == silence[0]["rule"])
-    empty = sorted(int(r["empty_outages"]) for r in silence if r["rule"] == silence[0]["rule"])
-    lines += ["", f"Outages judged per seed: {outages[0]}-{outages[-1]}; outages with nothing to miss, left out: {empty[0]}-{empty[-1]}.", "",
+             f"(0, 1 or 2 per rooftop); each rule is checked every {STEP_MIN} minutes. An outage is detected when, between the "
+             "first upload that did not arrive and the end of the outage, the rule fires with the outage and would not fire "
+             "without it; the delay runs from that first missed upload. A false alert is an alert that starts on the same "
+             "fleet with no outage, split by whether the rooftop was open as scheduled or had skipped a day it normally opens. "
+             "Outages with nothing to miss (the rooftop was closed for all of it) are left out.", "",
+             "| rule | outages detected | detected, by seed: median (range) | median delay (h) | 90th percentile delay (h) "
+             "| false alerts per 100 rooftop-weeks, scheduled days | false alerts per 100 rooftop-weeks, skipped days |",
+             "| --- | --- | --- | --- | --- | --- | --- |"]
+    for rule in rule_names:
+        mine = [r for r in outages if r["rule"] == rule]
+        found = [int(r["delay_min"]) for r in mine if r["delay_min"] != ""]
+        shares = [100 * sum(1 for r in mine if int(r["seed"]) == s and r["delay_min"] != "") / per_seed[s]
+                  for s in seeds if per_seed[s]]
+        false_cells = "{:.1f} | {:.1f}".format(false_rate(false_rows, rule), false_rate(false_rows, rule, "false_skipped_day"))
+        if not found:
+            lines.append(f"| {rule} | 0 of {len(mine)} | n/a | n/a | n/a | {false_cells} |")
+            continue
+        lines.append("| {} | {} of {} ({:.0f}%) | {}% | {:.1f} | {:.1f} | {} |".format(
+            rule, len(found), len(mine), 100 * len(found) / len(mine), spread(shares),
+            statistics.median(found) / 60, nearest_rank(found, 0.9) / 60, false_cells))
+    lines += ["", f"Outages judged: {min(per_seed.values())} to {max(per_seed.values())} per seed.", "",
               "## Reconcile", "",
-              "Judged three days after the last repair. 'Missed' is an injected fault no finding names; 'extra' is a finding "
-              "for something that was not injected.", "",
+              f"Judged at day {HISTORY_DAYS + 3}, three days after the {HISTORY_DAYS}-day span. Totals over the {len(seeds)} seeds. "
+              "'Missed' is an injected fault no finding with that code names; 'extra' is a finding for something that was not "
+              "injected.", "",
               "| code | injected | caught | missed | extra |", "| --- | --- | --- | --- | --- |"]
     for code in dict.fromkeys(r["code"] for r in recon):
-        rows = [r for r in recon if r["code"] == code]
+        mine = [r for r in recon if r["code"] == code]
         if code == "HIDDEN_WRONG_AUDIO":
             lines.append("| {} | {} | not checked | not checked | {} reported by another check |".format(
-                code, spread([r["injected"] for r in rows], 0), spread([r["incidental"] for r in rows], 0)))
+                code, sum(int(r["injected"]) for r in mine), sum(int(r["incidental"]) for r in mine)))
             continue
         lines.append("| {} | {} | {} | {} | {} |".format(
-            code, *(spread([r[col] for r in rows], 0) for col in ("injected", "caught", "missed", "extra"))))
+            code, *(sum(int(r[col]) for r in mine) for col in ("injected", "caught", "missed", "extra"))))
     lines += ["", "### Thin-transcript threshold", "",
-              "Words a minute below this share of the rooftop's median counts as thin. The default is the value picked on the tuning seeds.", "",
+              "Words a minute below this share of the rooftop's median counts as thin. The default is the value picked on the "
+              "tuning seeds.", "",
               "| share of median | injected | caught | extra |", "| --- | --- | --- | --- |"]
     for fraction in dict.fromkeys(r["thin_fraction"] for r in sweep):
-        rows = [r for r in sweep if r["thin_fraction"] == fraction]
+        mine = [r for r in sweep if r["thin_fraction"] == fraction]
         lines.append("| {} | {} | {} | {} |".format(
-            fraction, *(spread([r[col] for r in rows], 0) for col in ("injected", "caught", "extra"))))
+            fraction, *(sum(int(r[col]) for r in mine) for col in ("injected", "caught", "extra"))))
     lines += ["", "### Grace window", "",
-              "One Monday-morning snapshot (day 14, 16:00 UTC) of the same fleet, judged with and without a grace window. "
-              "Everything reported here is in flight, not defective.", "",
+              "One Monday-morning snapshot (day 14, 16:00 UTC) of each fleet, judged with and without a grace window. Every "
+              "finding here is in flight, not defective; cells are the median and range over seeds.", "",
               "| grace (minutes) | missing recordings reported | orphan recordings reported |", "| --- | --- | --- |"]
     for minutes in dict.fromkeys(r["grace_min"] for r in grace):
-        rows = [r for r in grace if r["grace_min"] == minutes]
+        mine = [r for r in grace if r["grace_min"] == minutes]
         lines.append("| {} | {} | {} |".format(
-            minutes, spread([r["missing_extra"] for r in rows], 0), spread([r["orphan_extra"] for r in rows], 0)))
+            minutes, spread([r["missing_extra"] for r in mine]), spread([r["orphan_extra"] for r in mine])))
     text = "\n".join(lines) + "\n"
     (out / "summary.md").write_text(text, newline="\n")
     return text
@@ -237,8 +268,13 @@ def summarize(out_dir, rooftops=ROOFTOPS):
 def run(out_dir, seeds=SEEDS, rooftops=ROOFTOPS):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    silence = [row for seed in seeds for row in silence_seed(seed, rooftops)]
-    write_csv(out / "silence.csv", silence)
+    outage_rows, false_rows = [], []
+    for seed in seeds:
+        o, f = silence_seed(seed, rooftops)
+        outage_rows += o
+        false_rows += f
+    write_csv(out / "silence-outages.csv", outage_rows)
+    write_csv(out / "silence-false-alerts.csv", false_rows)
     recon, sweep, grace = [], [], []
     for seed in seeds:
         by_code, s, g = reconcile_seed(seed, rooftops)
