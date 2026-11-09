@@ -8,9 +8,9 @@ Bayworks's posting (https://www.ycombinator.com/companies/bayworks/jobs/d8F4B1K-
 
 ## What it does
 
-- `quiet` learns each rooftop's uploads per hour of the week from the four weeks before its last upload. A rooftop is quiet when the uploads expected since its last one, added up over that profile, reach k (default 20). A closed Sunday or a closed night adds almost nothing, so it is not reported; a missed Tuesday morning adds a lot. A rooftop with fewer than 50 uploads in the profile window is not judged.
-- `reconcile` reads closed repair orders and recordings as of a minute and reports six things: a repair order with no recording, a recording with no repair order, one file attached to more than one repair order (the first upload is kept, the others are reported; a retry for the same order is not), an empty file, a file under half the rooftop's median bytes per second, and a transcript under a tenth of the rooftop's median words per minute (recordings of at least 60 seconds). A repair order or recording younger than a six-hour grace window is not reported as missing or orphaned.
-- `rooftop_watch/gen.py` makes the fleet: per rooftop a UTC offset, opening hours (Monday to Friday 7 to 18, Saturday 8 to 14, local time, Sunday closed), a mean weekday volume of about 48 repairs (the posting's 4,000 cars a day over 80+ dealerships is about 50), uploads that are 60 to 300 minutes late 5% of the time, repair-order sync lag of up to 240 minutes, a closed day 1 time in 60, outages, and seven kinds of injected fault with a manifest of the rows it changed.
+- `quiet` learns each rooftop's uploads per hour of the week from the four weeks before its last upload. A rooftop is quiet when the uploads expected since its last one, added up over that profile, reach k (default 20). A closed Sunday or a closed night adds almost nothing, so it is not reported; a missed busy morning adds the most expected uploads per hour. A rooftop with fewer than 50 uploads in the profile window is not judged.
+- `reconcile` reads closed repair orders and recordings as of a given minute and reports six things: a repair order with no recording, a recording with no repair order, one file attached to more than one repair order (the first upload is kept, the others are reported; a retry for the same order is not), an empty file, a file under half the rooftop's median bytes per second, and a transcript under a tenth of the rooftop's median words per minute (recordings of at least 60 seconds). A rooftop with fewer than 20 recordings is judged against the fleet's median instead of its own. A repair order or recording younger than a six-hour grace window is not reported as missing or orphaned.
+- `rooftop_watch/gen.py` makes the fleet. Each rooftop gets a UTC offset and opening hours (Monday to Friday 7 to 18, Saturday 8 to 14, local time, Sunday closed). Volume averages about 48 repairs on a weekday (the posting's 4,000 cars a day over 80+ dealerships is about 50). Uploads are 60 to 300 minutes late 5% of the time, the repair order reaches the platform up to 240 minutes after it closes, and a rooftop skips 1 in 60 of the days it would normally open. Outages and seven kinds of injected fault are added, with a manifest of the rows each fault changed.
 
 ## Run it
 
@@ -22,7 +22,7 @@ python -m rooftop_watch demo --out demo
 python -m rooftop_watch quiet demo/fleet.db
 python -m rooftop_watch reconcile demo/fleet.db
 python -m rooftop_watch evaluate     # writes results/, five seeds
-python -m rooftop_watch tune         # prints how k and the transcript share were chosen
+python -m rooftop_watch tune         # how k and the transcript share were chosen; writes results/tune.txt
 python -m rooftop_watch scale        # times both checks at 80 and 1000 rooftops
 ```
 
@@ -34,7 +34,7 @@ Copied from `results/summary.md` and `results/scale.md`, which the commands abov
 
 ### Quiet feeds
 
-28 clean days to learn each profile, then 28 days with outages of 4, 8, 24 or 48 hours (0, 1 or 2 per rooftop); each rule is checked every 15 minutes. An outage is detected when, between the first upload that did not arrive and the end of the outage, the rule fires with the outage and would not fire without it; the delay runs from that first missed upload. A false alert is an alert that starts on the same fleet with no outage, split by whether the rooftop was open as scheduled or had skipped a day it normally opens. Each rule is scored over 1600 rooftop-weeks (80 rooftops, 4 test weeks, 5 seeds), so 0.1 in the scheduled-days column is 1 alert and 98.8 is 1581.
+28 clean days to learn each profile, then 28 days with outages of 4, 8, 24 or 48 hours (0, 1 or 2 per rooftop); each rule is checked every 15 minutes. An outage is detected when, between the first upload that did not arrive and the end of the outage, the rule fires with the outage and would not fire without it; the delay runs from that first missed upload. A false alert is an alert that starts when the same fleet is replayed without its outages, split by whether the rooftop was open as scheduled or had skipped a day it normally opens. Outages with nothing to miss (the rooftop was closed for all of it) are left out. Each rule is scored over 1600 rooftop-weeks (80 rooftops, 4 test weeks, 5 seeds), so 0.1 in the scheduled-days column is 1 alert and 98.8 is 1581.
 
 | rule | outages detected | detected, by seed: median (range) | median delay (h) | 90th percentile delay (h) | false alerts per 100 rooftop-weeks, scheduled days | false alerts per 100 rooftop-weeks, skipped days |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -47,11 +47,24 @@ Copied from `results/summary.md` and `results/scale.md`, which the commands abov
 | gap 12h | 130 of 179 (73%) | 71 (64-90)% | 0.2 | 11.7 | 455.5 | 7.7 |
 | gap 24h | 96 of 179 (54%) | 55 (48-66)% | 11.1 | 23.6 | 98.8 | 7.8 |
 
-A gap rule alerts when a rooftop has uploaded nothing for that many hours. Outages judged: 29 to 45 per seed.
+A gap rule alerts when a rooftop has uploaded nothing for that many hours. Outages judged: 29 to 45 per seed. Detected out of judged, by outage length:
+
+| rule | 4 h | 8 h | 24 h | 48 h |
+| --- | --- | --- | --- | --- |
+| quiet k=3 | 34 of 38 | 33 of 39 | 44 of 44 | 58 of 58 |
+| quiet k=5 | 28 of 38 | 30 of 39 | 44 of 44 | 58 of 58 |
+| quiet k=8 | 23 of 38 | 25 of 39 | 43 of 44 | 58 of 58 |
+| quiet k=12 | 17 of 38 | 23 of 39 | 41 of 44 | 58 of 58 |
+| quiet k=20 | 4 of 38 | 14 of 39 | 34 of 44 | 55 of 58 |
+| gap 6h | 14 of 38 | 37 of 39 | 44 of 44 | 58 of 58 |
+| gap 12h | 12 of 38 | 16 of 39 | 44 of 44 | 58 of 58 |
+| gap 24h | 0 of 38 | 1 of 39 | 37 of 44 | 58 of 58 |
+
+At the default k=20, most of the 72 outages it misses last 4 or 8 hours (59 of them). Its lead over the 24-hour gap rule (107 against 96) comes from the outages shorter than a day, 18 of 77 against 1 of 77; on outages of a day or longer it caught 89 of 102 and the gap rule 95.
 
 ### Reconcile
 
-Judged at day 31, three days after the 28-day span. 'Missed' is an injected fault no finding with that code names; 'extra' is a finding for something that was not injected.
+28 days of repairs with faults injected, judged at day 31, three days after those 28 days end. 'Missed' is an injected fault that no finding of that code reports; 'extra' is a finding for something that was not injected.
 
 | code | injected | caught | missed | extra |
 | --- | --- | --- | --- | --- |
@@ -92,13 +105,12 @@ One check of each kind over 28 days of data, 7 days for the reconcile window; me
 ## What this does not show
 
 - The data is invented. I chose the opening hours, volumes, delays, fault rates and the transcript model, and I wrote both the faults and the checks, so a high score shows that the checks do what they say. It says nothing about how often a real feed fails or what real recordings look like.
-- k=20 and the 0.10 transcript share were chosen on seeds 101 to 103, which the reported runs do not use, by rules I fixed before looking: the smallest k with at most 2 false alerts per 100 rooftop-weeks on scheduled days, pooled over those seeds (k=12 gave 2.40 there, k=20 gave 0.10), and the share with the best F1 (0.9949 at 0.10). `tune` prints the table. Both depend on my fault model. k=12 would detect 78% of the outages instead of 60% for 1.9 false alerts per 100 rooftop-weeks instead of 0.1; `quiet --k 12` runs it.
+- k=20 and the 0.10 transcript share were chosen on seeds 101 to 103, which the reported runs do not use. I fixed the rules before looking: the smallest k with at most 2 false alerts per 100 rooftop-weeks on scheduled days, pooled over those seeds (k=12 gave 2.40 there, k=20 gave 0.10), and the share with the best F1 (0.9949 at 0.10). `tune` prints the table and writes it to `results/tune.txt`. Both depend on my fault model. k=12 would detect 78% of the outages instead of 60% for 1.9 false alerts per 100 rooftop-weeks instead of 0.1; `quiet --k 12` runs it.
 - The gap rules fire on ordinary closed nights, so on an outage that starts at night they score a short delay; the false-alert column shows what that costs.
 - Alerts on days a rooftop skipped stay between 6.1 and 9.2 per 100 rooftop-weeks (pooled) for every rule; only a holiday calendar would remove them.
-- I did not break the missed outages down by length or time of day.
-- One kind of fault, a recording of a different repair that is intact in every way a check can see, is injected and never reported. Nothing here can see it.
+- I did not break the missed outages down by time of day.
+- One kind of fault, a recording of a different repair that is intact in every way a check can see, is injected and never reported.
 - It runs on SQLite. I have not run it against PostgreSQL, an object store, a real repair-order feed or real audio.
 - The profile for a live check is the four weeks before a rooftop's last upload, so an earlier outage inside that window lowers it. The replay learns from clean history, so it does not show that effect.
 - Reconcile took 10.1 seconds at 1000 rooftops and 0.31 at 80: about 32 times as long for about 11 times the recordings. I would not extrapolate it to larger fleets.
-- Access controls and versioning of the stored recordings are not covered.
 - The timings come from a laptop that was also running other jobs, so read them as an order of magnitude.
