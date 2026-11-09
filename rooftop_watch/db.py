@@ -19,13 +19,24 @@ CREATE TABLE recordings (
     rec_id TEXT PRIMARY KEY,
     ro_id TEXT NOT NULL,
     rooftop_id INTEGER NOT NULL,
-    uploaded_min INTEGER NOT NULL
+    uploaded_min INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    duration_s INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    transcript_words INTEGER NOT NULL
+);
+CREATE TABLE faults (
+    code TEXT NOT NULL,
+    ro_id TEXT,
+    rec_id TEXT,
+    rooftop_id INTEGER NOT NULL
 );
 """
 
 INDEXES = """
 CREATE INDEX recordings_rooftop_time ON recordings (rooftop_id, uploaded_min);
 CREATE INDEX recordings_ro ON recordings (ro_id);
+CREATE INDEX recordings_sha ON recordings (sha256);
 CREATE INDEX repair_orders_rooftop_time ON repair_orders (rooftop_id, closed_min);
 """
 
@@ -37,18 +48,13 @@ def create(path):
 
 
 def load_fleet(conn, seed, rooftops, days):
-    """Write every rooftop's repairs and recordings, then build the indexes."""
+    """Write every rooftop's repairs, recordings and injected faults, then build the indexes."""
     for rooftop in rooftops:
         events = gen.rooftop_events(seed, rooftop, days)
-        rid = rooftop.rooftop_id
-        conn.execute("INSERT INTO rooftops VALUES (?, ?, ?)", (rid, rooftop.utc_offset_h, rooftop.daily_mean))
-        conn.executemany(
-            "INSERT INTO repair_orders VALUES (?, ?, ?, ?)",
-            [(gen.ro_id(rid, s), rid, closed, synced) for s, closed, _, synced in events],
-        )
-        conn.executemany(
-            "INSERT INTO recordings VALUES (?, ?, ?, ?)",
-            [(gen.rec_id(rid, s), gen.ro_id(rid, s), rid, up) for s, _, up, _ in events],
-        )
+        ros, recs, faults = gen.rooftop_records(seed, rooftop, events)
+        conn.execute("INSERT INTO rooftops VALUES (?, ?, ?)", (rooftop.rooftop_id, rooftop.utc_offset_h, rooftop.daily_mean))
+        conn.executemany("INSERT INTO repair_orders VALUES (?, ?, ?, ?)", ros)
+        conn.executemany("INSERT INTO recordings VALUES (?, ?, ?, ?, ?, ?, ?, ?)", recs)
+        conn.executemany("INSERT INTO faults VALUES (?, ?, ?, ?)", faults)
     conn.executescript(INDEXES)
     conn.commit()

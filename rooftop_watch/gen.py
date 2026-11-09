@@ -3,6 +3,7 @@
 Time is an integer number of minutes since a Monday 00:00 UTC, so minute // 60 % 168
 is the hour of the week and minute // 1440 % 7 is the weekday (0 = Monday).
 """
+import hashlib
 import math
 import random
 from dataclasses import dataclass
@@ -101,3 +102,85 @@ def ro_id(rooftop_id, seq):
 
 def rec_id(rooftop_id, seq):
     return f"REC-{rooftop_id:04d}-{seq:06d}"
+
+
+# Faults injected into the repair-order and recording feeds. Each repair draws once, so the kinds
+# are exclusive. The code is what a check should report; HIDDEN_WRONG_AUDIO is a recording of a
+# different repair that is intact in every way a check can see, and no check is meant to catch it.
+FAULT_RATES = (
+    ("MISSING_RECORDING", 0.03),
+    ("ORPHAN_RECORDING", 0.02),
+    ("DUPLICATE_CONTENT", 0.01),
+    ("EMPTY_FILE", 0.005),
+    ("TRUNCATED_FILE", 0.015),
+    ("THIN_TRANSCRIPT", 0.02),
+    ("HIDDEN_WRONG_AUDIO", 0.01),
+)
+BYTES_PER_S = 16000       # a 128 kbit/s audio track
+QUIET_SHARE = 0.10        # repairs that are mostly tool noise, so the transcript is short and correct
+MEDIAN_WPM = 110.0        # words a minute when the technician talks the repair through
+QUIET_WPM = 45.0
+
+
+def pick_fault(rng):
+    u = rng.random()
+    for code, rate in FAULT_RATES:
+        if u < rate:
+            return code
+        u -= rate
+    return None
+
+
+def rooftop_records(seed, rooftop, events):
+    """Turn one rooftop's events into repair-order rows, recording rows and a fault manifest.
+
+    Returns (repair_orders, recordings, faults). A fault row is (code, ro_id, rec_id, rooftop_id)
+    with the key the check should name filled in and the other one None.
+    """
+    rid = rooftop.rooftop_id
+    rng = random.Random(f"{seed}:{rid}:rec")
+    ros, recs, faults = [], [], []
+    earlier = []  # (sha256, ro_id, uploaded_min) of recordings already written for this rooftop
+    for seq, closed, uploaded, synced in events:
+        ro, rec = ro_id(rid, seq), rec_id(rid, seq)
+        duration = int(min(3600.0, max(30.0, rng.lognormvariate(math.log(420), 0.5))))
+        nbytes = int(duration * BYTES_PER_S * rng.uniform(0.95, 1.05))
+        if rng.random() < QUIET_SHARE:
+            wpm = rng.lognormvariate(math.log(QUIET_WPM), 0.5)
+        else:
+            wpm = max(40.0, rng.gauss(MEDIAN_WPM, 15.0))
+        words = round(duration / 60 * wpm)
+        sha = hashlib.sha256(f"{seed}:{rid}:{seq}".encode()).hexdigest()
+        code = pick_fault(rng)
+        # A copy is uploaded after the file it copies, so only earlier uploads can be its source.
+        sources = [e for e in earlier if e[2] < uploaded]
+        if code == "DUPLICATE_CONTENT" and not sources:
+            code = None
+        keep_ro, keep_rec = True, True
+        if code == "MISSING_RECORDING":
+            keep_rec = False
+            faults.append((code, ro, None, rid))
+        elif code == "ORPHAN_RECORDING":
+            keep_ro = False
+            faults.append((code, None, rec, rid))
+        elif code == "DUPLICATE_CONTENT":
+            sha = rng.choice(sources)[0]
+            faults.append((code, None, rec, rid))
+        elif code == "EMPTY_FILE":
+            nbytes = 0
+            faults.append((code, None, rec, rid))
+        elif code == "TRUNCATED_FILE":
+            share = rng.uniform(0.05, 0.4)
+            nbytes, words = int(nbytes * share), int(words * share)
+            faults.append((code, None, rec, rid))
+        elif code == "THIN_TRANSCRIPT":
+            words = int(words * rng.uniform(0.0, 0.08))
+            faults.append((code, None, rec, rid))
+        elif code == "HIDDEN_WRONG_AUDIO":
+            faults.append((code, None, rec, rid))
+        if keep_ro:
+            ros.append((ro, rid, closed, synced))
+        if keep_rec:
+            recs.append((rec, ro, rid, uploaded, nbytes, duration, sha, words))
+            earlier.append((sha, ro, uploaded))
+    return ros, recs, faults
