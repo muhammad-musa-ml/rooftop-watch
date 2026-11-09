@@ -57,7 +57,7 @@ def create(path):
 def load_fleet(conn, seed, rooftops, days, outage_range=None):
     """Write every rooftop's repairs, recordings and injected faults, then build the indexes.
 
-    With `outage_range=(start_min, end_min)` each rooftop may also lose every upload for a few hours inside
+    With `outage_range=(start_min, end_min)` each rooftop may also lose every upload for 4 to 48 hours inside
     that range. The repair orders still arrive, so the lost recordings show up as missing in `reconcile`;
     they are not in the fault manifest, which only lists the injected data faults.
     """

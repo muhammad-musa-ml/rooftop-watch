@@ -44,7 +44,8 @@ def poisson(rng, lam):
 
 
 def make_rooftops(seed, n):
-    """n rooftops whose mean daily volume is about 50, the posting's 4,000 a day over 80."""
+    """n rooftops with a mean weekday volume of about 48 (a lognormal draw with median 40), close to the 50 a
+    day that the posting's 4,000 a day over 80 dealerships gives. Saturdays run at half that and Sundays are closed."""
     rng = random.Random(f"fleet:{seed}")
     rooftops = []
     for rooftop_id in range(1, n + 1):
