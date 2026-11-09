@@ -1,0 +1,9 @@
+[project]
+name = "rooftop-watch"
+version = "0.1.0"
+description = "Checks that tell you a dealership feed went quiet or a repair has no usable recording, on synthetic data."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
