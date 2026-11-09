@@ -88,6 +88,14 @@ def test_quiet_rooftops_flags_the_one_that_stopped_and_ranks_by_missed_uploads()
     assert got[1].last_upload_min == now - 12 * HOUR
 
 
+def test_a_rooftop_with_fewer_uploads_than_the_baseline_needs_is_not_judged(monkeypatch):
+    now = 5 * MIN_WEEK
+    conn = conn_with_uploads({2: hourly_uploads(0, now - 11 * HOUR)})
+    assert [q.rooftop_id for q in quiet_rooftops(conn, now, k=8.0)] == [2]
+    monkeypatch.setattr("rooftop_watch.silence.MIN_BASELINE", 10_000)
+    assert quiet_rooftops(conn, now, k=8.0) == []
+
+
 def test_an_outage_does_not_lower_its_own_baseline_unless_the_window_is_forced_to_end_at_now():
     now = 6 * MIN_WEEK
     conn = conn_with_uploads({1: hourly_uploads(0, now - 47 * HOUR)})  # last upload exactly 48 hours ago
