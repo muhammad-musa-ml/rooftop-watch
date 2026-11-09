@@ -83,7 +83,7 @@ def cmd_evaluate(args):
 
 def cmd_tune(args):
     result = evaluate.tune()
-    print("k: open-day false alerts per 100 rooftop-weeks (median), outages detected, outages")
+    print("k: false alerts per 100 rooftop-weeks on scheduled days (pooled over the seeds), outages detected, outages")
     for k, false, detected, total in result["k_table"]:
         print(f"  k={k:g}: {false:.2f}, {detected}, {total}")
     print(f"smallest k at or under {evaluate.MAX_FALSE_PER_100:g}: {result['k']}")
