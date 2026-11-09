@@ -107,6 +107,21 @@ def test_an_outage_does_not_lower_its_own_baseline_unless_the_window_is_forced_t
     assert contaminated[0].expected_missed == pytest.approx(36.25)
 
 
+def test_an_upload_after_now_is_not_the_last_upload():
+    now = 6 * MIN_WEEK
+    conn = conn_with_uploads({1: hourly_uploads(0, now - 47 * HOUR) + [now + 5 * HOUR]})
+    found = quiet_rooftops(conn, now, k=1.0)
+    assert [q.rooftop_id for q in found] == [1]
+    assert found[0].expected_missed == pytest.approx(48.0)
+
+
+def test_a_rooftop_is_quiet_when_the_expected_uploads_reach_k_exactly():
+    now = 6 * MIN_WEEK
+    conn = conn_with_uploads({1: hourly_uploads(0, now - 11 * HOUR)})   # last upload 12 hours ago
+    assert [q.rooftop_id for q in quiet_rooftops(conn, now, k=12.0)] == [1]
+    assert quiet_rooftops(conn, now, k=12.0001) == []
+
+
 def test_a_rooftop_with_no_uploads_before_now_is_ignored():
     conn = conn_with_uploads({1: hourly_uploads(10 * MIN_WEEK, 11 * MIN_WEEK)})
     assert quiet_rooftops(conn, MIN_WEEK, k=1.0) == []

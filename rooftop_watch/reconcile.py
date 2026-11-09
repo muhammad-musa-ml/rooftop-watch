@@ -1,8 +1,9 @@
 """Reconcile closed repair orders against the recordings that arrived, and sanity-check each recording.
 
 Everything is read "as of" a minute `now`: a repair order counts once its synced_min has passed and a
-recording once its uploaded_min has passed. A repair order or recording is only judged after `grace_min`,
-so a late upload or a slow DMS sync is not reported as missing.
+recording once its uploaded_min has passed. A missing or orphan finding waits for `grace_min`, so a late
+upload or a slow DMS sync is not reported as missing. Empty, short, thin and duplicate findings need only
+the recording itself and are made as soon as it has uploaded.
 """
 import statistics
 from collections import defaultdict
@@ -68,22 +69,26 @@ def _orphans(conn, now, since, grace):
 
 
 def _duplicates(conn, now, since):
-    """One content hash on recordings of two or more repair orders: keep the first upload, flag the rest."""
+    """One content hash on recordings of two or more repair orders: keep the first upload and flag the
+    recordings attached to a different repair order. A retried upload for the same repair order is not
+    flagged, and neither is an empty file: every empty file has the same hash and is reported as EMPTY_FILE.
+    Only recordings inside the window take part.
+    """
+    groups = defaultdict(list)
     rows = conn.execute(
-        """SELECT r.sha256, r.rec_id, r.rooftop_id FROM recordings r
-           WHERE r.uploaded_min >= :since AND r.uploaded_min <= :now
-             AND r.sha256 IN (SELECT sha256 FROM recordings
-                              WHERE uploaded_min >= :since AND uploaded_min <= :now
-                              GROUP BY sha256 HAVING COUNT(DISTINCT ro_id) > 1)
-           ORDER BY r.sha256, r.uploaded_min, r.rec_id""",
-        {"now": now, "since": since},
+        """SELECT sha256, uploaded_min, rec_id, ro_id, rooftop_id FROM recordings
+           WHERE uploaded_min >= ? AND uploaded_min <= ? AND bytes > 0""",
+        (since, now),
     )
-    findings, current = [], None
-    for sha, rec, rooftop in rows:
-        if sha != current:
-            current = sha
+    for sha, uploaded, rec, ro, rooftop in rows:
+        groups[sha].append((uploaded, rec, ro, rooftop))
+    findings = []
+    for members in groups.values():
+        if len(members) < 2:
             continue
-        findings.append(Finding("DUPLICATE_CONTENT", rec, rooftop))
+        members.sort()
+        first_ro = members[0][2]
+        findings += [Finding("DUPLICATE_CONTENT", rec, rooftop) for _, rec, ro, rooftop in members[1:] if ro != first_ro]
     return findings
 
 
@@ -96,6 +101,8 @@ def _file_checks(conn, now, since, short_fraction, thin_fraction):
     ).fetchall()
     bps_by_rooftop, wpm_by_rooftop = defaultdict(list), defaultdict(list)
     for _, rooftop, nbytes, duration, words in rows:
+        if duration <= 0:
+            continue  # a length of zero cannot give a rate
         bps_by_rooftop[rooftop].append(nbytes / duration)
         wpm_by_rooftop[rooftop].append(words / (duration / 60))
     all_bps = [v for vals in bps_by_rooftop.values() for v in vals]
@@ -108,6 +115,8 @@ def _file_checks(conn, now, since, short_fraction, thin_fraction):
     for rec, rooftop, nbytes, duration, words in rows:
         if nbytes == 0:
             findings.append(Finding("EMPTY_FILE", rec, rooftop))
+        elif duration <= 0:
+            continue
         elif nbytes / duration < short_fraction * bps_median[rooftop]:
             findings.append(Finding("TRUNCATED_FILE", rec, rooftop))
         elif duration >= MIN_THIN_DURATION_S and words / (duration / 60) < thin_fraction * wpm_median[rooftop]:

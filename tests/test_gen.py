@@ -92,3 +92,5 @@ def test_loader_writes_every_table():
     assert conn.execute("SELECT COUNT(*) FROM rooftops").fetchone()[0] == 6
     assert conn.execute("SELECT COUNT(*) FROM repair_orders").fetchone()[0] > 100
     assert conn.execute("SELECT COUNT(*) FROM recordings").fetchone()[0] > 100
+    assert conn.execute("SELECT COUNT(*) FROM faults").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM outages").fetchone()[0] == 0   # outages are only written when asked for

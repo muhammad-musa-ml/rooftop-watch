@@ -16,8 +16,9 @@ def demo(tmp_path_factory):
 def test_demo_refuses_to_overwrite_an_existing_database(demo, tmp_path):
     out = str(tmp_path)
     cli.main(["demo", "--rooftops", "3", "--days", "28", "--out", out])
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as caught:
         cli.main(["demo", "--rooftops", "3", "--days", "28", "--out", out])
+    assert caught.value.code == 2
 
 
 def test_demo_loses_the_recordings_inside_each_outage_and_keeps_the_repair_orders(demo):
@@ -49,7 +50,7 @@ def test_quiet_finds_a_rooftop_at_the_end_of_a_long_outage_and_exits_1(demo, cap
         if f"rooftop {rooftop}:" in text:
             flagged += 1
             assert code == 1
-    assert flagged >= len(long_ones) // 2
+    assert flagged >= max(1, len(long_ones) // 2)
 
 
 def test_quiet_exits_0_when_nothing_is_quiet(tmp_path, capsys):
@@ -57,7 +58,7 @@ def test_quiet_exits_0_when_nothing_is_quiet(tmp_path, capsys):
     conn = db.create(path)
     db.load_fleet(conn, 2, gen.make_rooftops(2, 5), 56)
     conn.close()
-    # Monday 06:00 UTC after day 28: Sunday evening in every U.S. time zone, and every rooftop is closed.
+    # Monday 06:00 UTC after day 28: Sunday late evening to Monday 01:00 across UTC-8 to UTC-5; every rooftop is closed.
     assert cli.main(["quiet", path, "--now", str(28 * gen.MIN_DAY + 6 * gen.MIN_HOUR)]) == 0
     assert "0 rooftop(s)" in capsys.readouterr().out
 
@@ -70,9 +71,11 @@ def test_reconcile_lists_counts_for_every_code_and_exits_1_on_findings(demo, cap
         assert name in text
 
 
-def test_a_missing_database_is_an_error():
-    with pytest.raises(SystemExit):
+def test_a_missing_database_exits_2_so_it_is_not_mistaken_for_a_finding(capsys):
+    with pytest.raises(SystemExit) as caught:
         cli.main(["quiet", "no-such-file.db"])
+    assert caught.value.code == 2
+    assert "no such database" in capsys.readouterr().err
 
 
 def test_fmt_names_the_weekday_and_clock():

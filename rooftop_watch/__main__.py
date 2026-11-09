@@ -15,9 +15,15 @@ def fmt(minute):
     return f"day {day} {DAYS[day % 7]} {rest // 60:02d}:{rest % 60:02d} UTC"
 
 
+def fail(message):
+    """Exit 2, so a job that gates on exit 1 ("found something") can tell a failure from a finding."""
+    print(message, file=sys.stderr)
+    sys.exit(2)
+
+
 def open_db(path):
     if not os.path.exists(path):
-        sys.exit(f"no such database: {path}")
+        fail(f"no such database: {path}")
     return sqlite3.connect(path)
 
 
@@ -29,7 +35,7 @@ def cmd_demo(args):
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, "fleet.db")
     if os.path.exists(path):
-        sys.exit(f"{path} exists; remove it first")
+        fail(f"{path} exists; remove it first")
     conn = db.create(path)
     half = args.days // 2
     db.load_fleet(conn, args.seed, gen.make_rooftops(args.seed, args.rooftops), args.days,
@@ -58,7 +64,7 @@ def cmd_quiet(args):
 
 def cmd_reconcile(args):
     conn = open_db(args.db)
-    now = args.now if args.now is not None else end_of_data(conn) + rec.GRACE_MIN
+    now = args.now if args.now is not None else end_of_data(conn) + args.grace
     findings = rec.reconcile(conn, now, since_min=args.since, grace_min=args.grace)
     counts = Counter(f.code for f in findings)
     print(f"reconcile as of {fmt(now)}, grace {args.grace} minutes: {len(findings)} finding(s)")

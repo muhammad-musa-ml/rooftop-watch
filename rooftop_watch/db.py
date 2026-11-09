@@ -43,6 +43,7 @@ INDEXES = """
 CREATE INDEX recordings_rooftop_time ON recordings (rooftop_id, uploaded_min);
 CREATE INDEX recordings_ro ON recordings (ro_id);
 CREATE INDEX recordings_sha ON recordings (sha256);
+CREATE INDEX recordings_time ON recordings (uploaded_min);
 CREATE INDEX repair_orders_rooftop_time ON repair_orders (rooftop_id, closed_min);
 """
 

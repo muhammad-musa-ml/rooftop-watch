@@ -237,5 +237,6 @@ def rooftop_records(seed, rooftop, events):
             ros.append((ro, rid, closed, synced))
         if keep_rec:
             recs.append((rec, ro, rid, uploaded, nbytes, duration, sha, words))
-            earlier.append((sha, ro, uploaded))
+            if nbytes > 0:  # a copy of an empty file would itself be empty
+                earlier.append((sha, ro, uploaded))
     return ros, recs, faults
